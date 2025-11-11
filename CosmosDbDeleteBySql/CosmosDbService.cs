@@ -1,41 +1,43 @@
-using System.Text.Json;
 using Azure.Identity;
 using Microsoft.Azure.Cosmos;
+using Newtonsoft.Json.Linq;
 
 public class CosmosDbService : IDisposable
 {
-    private readonly CosmosClient _client;
-    private readonly Container _container;
-    private readonly string _partitionKeyPath;
+    private CosmosClient _client { get; set ; }
+    private Container _container { get;  set; }
+    public string PartitionKeyPath { get; set; }
 
-    public string PartitionKeyPath => _partitionKeyPath;
-
-    public CosmosDbService(string endpoint, string database, string containerName)
+    private CosmosDbService(CosmosClient client, Container container, string partitionKeyPath)
     {
-        var credential = new DefaultAzureCredential();
-        _client = new CosmosClient(endpoint, credential);
-        _container = _client.GetContainer(database, containerName);
-
-        // Get partition key path from container metadata
-        var containerProperties = _container.ReadContainerAsync().GetAwaiter().GetResult();
-        _partitionKeyPath = containerProperties.Resource.PartitionKeyPath;
+        _client = client;
+        _container = container;
+        PartitionKeyPath = partitionKeyPath;
     }
 
-    public async Task<List<(string Id, PartitionKey PartitionKey, JsonDocument Document)>> FetchItemsAsync(string query, int? limit = null)
+    public static async Task<CosmosDbService> CreateAsync(string endpoint, string database, string containerName)
+    {
+        var credential = new DefaultAzureCredential();
+        var client = new CosmosClient(endpoint, credential);
+        var container = client.GetContainer(database, containerName);
+        var containerProperties = await container.ReadContainerAsync();
+        var partitionKeyPath = containerProperties.Resource.PartitionKeyPath;
+        return new CosmosDbService(client, container, partitionKeyPath);
+    }
+
+    public async Task<List<JObject>> FetchItemsAsync(string query, int? limit = null)
     {
         var queryDefinition = new QueryDefinition(query);
-        var iterator = _container.GetItemQueryIterator<JsonDocument>(queryDefinition);
+        var iterator = _container.GetItemQueryIterator<JObject>(queryDefinition);
 
-        var items = new List<(string Id, PartitionKey PartitionKey, JsonDocument Document)>();
+        var items = new List<JObject>();
 
         while (iterator.HasMoreResults && (!limit.HasValue || items.Count < limit.Value))
         {
             var response = await iterator.ReadNextAsync();
             foreach (var doc in response)
             {
-                var id = doc.RootElement.GetProperty("id").GetString()!;
-                var partitionKeyValue = GetPartitionKeyValue(doc.RootElement, _partitionKeyPath);
-                items.Add((id, partitionKeyValue, doc));
+                items.Add(doc);
 
                 if (limit.HasValue && items.Count >= limit.Value)
                     break;
@@ -45,13 +47,13 @@ public class CosmosDbService : IDisposable
         return items;
     }
 
-    public async Task<int> StreamDeleteItemsAsync(
+    public async Task<int> DeleteItemsAsync(
         string query,
         Action<int> onProgress,
         CancellationToken cancellationToken = default)
     {
         var queryDefinition = new QueryDefinition(query);
-        var iterator = _container.GetItemQueryIterator<JsonDocument>(queryDefinition);
+        var iterator = _container.GetItemQueryIterator<JObject>(queryDefinition);
 
         int totalDeleted = 0;
         const int batchSize = 100;
@@ -60,14 +62,15 @@ public class CosmosDbService : IDisposable
         while (iterator.HasMoreResults)
         {
             if (cancellationToken.IsCancellationRequested)
+            {
                 break;
-
+            }
             var response = await iterator.ReadNextAsync(cancellationToken);
 
             foreach (var doc in response)
             {
-                var id = doc.RootElement.GetProperty("id").GetString()!;
-                var partitionKeyValue = GetPartitionKeyValue(doc.RootElement, _partitionKeyPath);
+                var id = doc["id"]!.ToString();
+                var partitionKeyValue = GetPartitionKeyValue(doc, PartitionKeyPath);
 
                 deleteTasks.Add(DeleteItemWithRetryAsync(id, partitionKeyValue));
 
@@ -93,9 +96,19 @@ public class CosmosDbService : IDisposable
         return totalDeleted;
     }
 
-    public async Task DeleteAllItemsInPartitionAsync(PartitionKey partitionKey)
+    public async Task DeleteAllItemsByPartitionKeyAsync(PartitionKey partitionKey)
     {
-        await _container.DeleteAllItemsByPartitionKeyStreamAsync(partitionKey);
+        // TODO: Not implemented
+        // Note: This API may not be available in all SDK versions or requires specific Cosmos DB account configuration
+        // Attempting to call the bulk delete API if available
+        try
+        {
+            throw new NotImplementedException();
+        }
+        catch
+        {
+            throw new NotSupportedException("DeleteAllItemsInPartitionKey is not supported on this account or SDK version");
+        }
     }
 
     public async Task<int> CountItemsAsync(string query)
@@ -107,7 +120,7 @@ public class CosmosDbService : IDisposable
         if (countQuery == query)
         {
             var queryDefinition = new QueryDefinition(query);
-            var iterator = _container.GetItemQueryIterator<JsonDocument>(queryDefinition);
+            var iterator = _container.GetItemQueryIterator<JObject>(queryDefinition);
 
             int count = 0;
             while (iterator.HasMoreResults)
@@ -139,7 +152,7 @@ public class CosmosDbService : IDisposable
         {
             try
             {
-                await _container.DeleteItemAsync<JsonDocument>(id, partitionKey);
+                await _container.DeleteItemAsync<JObject>(id, partitionKey);
                 return;
             }
             catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.TooManyRequests)
@@ -153,29 +166,27 @@ public class CosmosDbService : IDisposable
         }
     }
 
-    private PartitionKey GetPartitionKeyValue(JsonElement element, string partitionKeyPath)
+    private static PartitionKey GetPartitionKeyValue(JObject document, string partitionKeyPath)
     {
         var path = partitionKeyPath.TrimStart('/');
-        var current = element;
+        JToken? current = document;
 
         foreach (var segment in path.Split('/'))
         {
-            if (current.TryGetProperty(segment, out var property))
-            {
-                current = property;
-            }
-            else
+            current = current?[segment];
+            if (current == null)
             {
                 return PartitionKey.None;
             }
         }
 
-        return current.ValueKind switch
+        return current.Type switch
         {
-            JsonValueKind.String => new PartitionKey(current.GetString()),
-            JsonValueKind.Number => new PartitionKey(current.GetDouble()),
-            JsonValueKind.True or JsonValueKind.False => new PartitionKey(current.GetBoolean()),
-            JsonValueKind.Null => PartitionKey.Null,
+            JTokenType.String => new PartitionKey(current.Value<string>()),
+            JTokenType.Integer => new PartitionKey(current.Value<long>()),
+            JTokenType.Float => new PartitionKey(current.Value<double>()),
+            JTokenType.Boolean => new PartitionKey(current.Value<bool>()),
+            JTokenType.Null => PartitionKey.Null,
             _ => PartitionKey.None
         };
     }

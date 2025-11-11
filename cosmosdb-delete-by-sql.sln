@@ -1,0 +1,30 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CosmosDbDeleteBySql.Tests", "CosmosDbDeleteBySql.Tests\CosmosDbDeleteBySql.Tests.csproj", "{21A2AEF5-93B8-4451-440F-ABC2C1F6FCD4}"
+EndProject
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "CosmosDbDeleteBySql", "CosmosDbDeleteBySql\CosmosDbDeleteBySql.csproj", "{096753FA-8079-A978-D308-6746D1D2F78F}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{21A2AEF5-93B8-4451-440F-ABC2C1F6FCD4}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{21A2AEF5-93B8-4451-440F-ABC2C1F6FCD4}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{21A2AEF5-93B8-4451-440F-ABC2C1F6FCD4}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{21A2AEF5-93B8-4451-440F-ABC2C1F6FCD4}.Release|Any CPU.Build.0 = Release|Any CPU
+		{096753FA-8079-A978-D308-6746D1D2F78F}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{096753FA-8079-A978-D308-6746D1D2F78F}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{096753FA-8079-A978-D308-6746D1D2F78F}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{096753FA-8079-A978-D308-6746D1D2F78F}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {315B2BAC-E243-4AE2-A750-6321BF34106E}
+	EndGlobalSection
+EndGlobal

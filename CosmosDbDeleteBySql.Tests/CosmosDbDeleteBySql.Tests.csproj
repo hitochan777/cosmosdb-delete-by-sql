@@ -20,7 +20,7 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\cosmosdb-delete-by-sql.csproj" />
+    <ProjectReference Include="..\CosmosDbDeleteBySql\CosmosDbDeleteBySql.csproj" />
   </ItemGroup>
 
 </Project>

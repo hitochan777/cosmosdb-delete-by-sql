@@ -1,6 +1,6 @@
 using System.ComponentModel;
-using System.Text.Json;
 using Microsoft.Azure.Cosmos;
+using Newtonsoft.Json.Linq;
 using Spectre.Console;
 using Spectre.Console.Cli;
 
@@ -44,7 +44,7 @@ public class DeleteCommand : AsyncCommand<DeleteCommand.Settings>
         }
         catch (Exception ex)
         {
-            AnsiConsole.MarkupLine($"[red]Error: {ex.Message}[/]");
+            AnsiConsole.MarkupLine($"[red]Error: {ex.Message.EscapeMarkup()}[/]");
             AnsiConsole.WriteException(ex);
             return 1;
         }
@@ -52,35 +52,38 @@ public class DeleteCommand : AsyncCommand<DeleteCommand.Settings>
 
     private async Task DeleteItemsAsync(Settings settings)
     {
-        using var cosmosService = await AnsiConsole.Status()
+        CosmosDbService cosmosService = await AnsiConsole.Status()
             .StartAsync("Connecting to Cosmos DB...", async ctx =>
             {
-                return new CosmosDbService(settings.Endpoint, settings.Database, settings.Container);
+                return await CosmosDbService.CreateAsync(settings.Endpoint, settings.Database, settings.Container);
             });
 
-        AnsiConsole.MarkupLine($"[green]Connected to:[/] {settings.Database}/{settings.Container}");
-        AnsiConsole.MarkupLine($"[green]Partition key path:[/] {cosmosService.PartitionKeyPath}");
-        AnsiConsole.MarkupLine($"[green]Query:[/] {settings.Query}");
-        AnsiConsole.WriteLine();
-
-        // Analyze query to determine if we can use DeleteAllItemsInPartitionKey
-        var canUsePartitionDelete = QueryAnalyzer.CanUseDeleteAllItemsInPartition(
-            settings.Query,
-            cosmosService.PartitionKeyPath);
-
-        var partitionKeyValue = QueryAnalyzer.ExtractPartitionKeyValue(
-            settings.Query,
-            cosmosService.PartitionKeyPath);
-
-        if (canUsePartitionDelete && partitionKeyValue != null)
+        using (cosmosService)
         {
-            AnsiConsole.MarkupLine($"[green]Query targets a single partition (partition key = '{partitionKeyValue}'). Will use DeleteAllItemsInPartitionKey for efficient deletion.[/]");
-            await DeleteWithPartitionKeyAsync(cosmosService, settings, partitionKeyValue);
-        }
-        else
-        {
-            AnsiConsole.MarkupLine("[yellow]Query spans multiple partitions or is not partition-specific. Will fetch items and delete individually.[/]");
-            await DeleteIndividuallyAsync(cosmosService, settings);
+            AnsiConsole.MarkupLine($"[green]Connected to:[/] {settings.Database.EscapeMarkup()}/{settings.Container.EscapeMarkup()}");
+            AnsiConsole.MarkupLine($"[green]Partition key path:[/] {cosmosService.PartitionKeyPath.EscapeMarkup()}");
+            AnsiConsole.MarkupLine($"[green]Query:[/] {settings.Query.EscapeMarkup()}");
+            AnsiConsole.WriteLine();
+
+            // Analyze query to determine if we can use DeleteAllItemsInPartitionKey
+            var canUsePartitionDelete = QueryAnalyzer.CanUseDeleteAllItemsInPartition(
+                settings.Query,
+                cosmosService.PartitionKeyPath);
+
+            var partitionKeyValue = QueryAnalyzer.ExtractPartitionKeyValue(
+                settings.Query,
+                cosmosService.PartitionKeyPath);
+
+            if (canUsePartitionDelete && partitionKeyValue != null)
+            {
+                AnsiConsole.MarkupLine($"[green]Query targets a single partition (partition key = '{partitionKeyValue.EscapeMarkup()}'). Will use DeleteAllItemsInPartitionKey for efficient deletion.[/]");
+                await DeleteWithPartitionKeyAsync(cosmosService, settings, partitionKeyValue);
+            }
+            else
+            {
+                AnsiConsole.MarkupLine("[yellow]Query spans multiple partitions or is not partition-specific. Will fetch items and delete individually.[/]");
+                await DeleteIndividuallyAsync(cosmosService, settings);
+            }
         }
     }
 
@@ -119,12 +122,12 @@ public class DeleteCommand : AsyncCommand<DeleteCommand.Settings>
             await AnsiConsole.Status()
                 .StartAsync("Deleting all items in partition...", async ctx =>
                 {
-                    await cosmosService.DeleteAllItemsInPartitionAsync(partitionKey);
+                    await cosmosService.DeleteAllItemsByPartitionKeyAsync(partitionKey);
                 });
 
-            AnsiConsole.MarkupLine($"[green]Successfully deleted all items in partition '{partitionKeyValue}'.[/]");
+            AnsiConsole.MarkupLine($"[green]Successfully deleted all items in partition '{partitionKeyValue.EscapeMarkup()}'.[/]");
         }
-        catch (CosmosException ex) when (ex.StatusCode == System.Net.HttpStatusCode.BadRequest)
+        catch (Exception ex) when (ex is CosmosException cosmosEx && cosmosEx.StatusCode == System.Net.HttpStatusCode.BadRequest || ex is NotSupportedException)
         {
             AnsiConsole.MarkupLine("[yellow]DeleteAllItemsInPartitionKey is not supported on this account. Falling back to stream deletion.[/]");
             await StreamDeleteAsync(cosmosService, settings);
@@ -176,7 +179,7 @@ public class DeleteCommand : AsyncCommand<DeleteCommand.Settings>
             {
                 var task = ctx.AddTask("[yellow]Deleting items (streaming)...[/]");
 
-                totalDeleted = await cosmosService.StreamDeleteItemsAsync(settings.Query, progress =>
+                totalDeleted = await cosmosService.DeleteItemsAsync(settings.Query, progress =>
                 {
                     task.Value = progress;
                     if (!task.IsStarted)
@@ -197,7 +200,7 @@ public class DeleteCommand : AsyncCommand<DeleteCommand.Settings>
     }
 
     private async Task<bool> ShowPreviewAndConfirm(
-        List<(string Id, PartitionKey PartitionKey, JsonDocument Document)> items,
+        List<JObject> items,
         int totalCount,
         Settings settings,
         string confirmationMessage)
@@ -221,7 +224,7 @@ public class DeleteCommand : AsyncCommand<DeleteCommand.Settings>
         return true;
     }
 
-    private void ShowPreview(List<(string Id, PartitionKey PartitionKey, JsonDocument Document)> items, int previewCount)
+    private void ShowPreview(List<JObject> items, int previewCount)
     {
         var itemsToShow = items.Take(previewCount).ToList();
 
@@ -229,21 +232,19 @@ public class DeleteCommand : AsyncCommand<DeleteCommand.Settings>
 
         var table = new Table();
         table.Border(TableBorder.Rounded);
-        table.AddColumn("Index");
+        table.AddColumn("#");
         table.AddColumn("ID");
-        table.AddColumn("Partition Key");
         table.AddColumn("Document (truncated)");
 
         for (int i = 0; i < itemsToShow.Count; i++)
         {
             var item = itemsToShow[i];
-            var docString = item.Document.RootElement.ToString();
-            var truncated = docString.Length > 100 ? docString.Substring(0, 100) + "..." : docString;
+            var docString = item.ToString();
+            var truncated = docString.Length > 100 ? docString[..100] + "..." : docString;
 
             table.AddRow(
-                (i + 1).ToString(),
-                item.Id,
-                item.PartitionKey.ToString(),
+                (i + 1).ToString().EscapeMarkup(),
+                item["id"]!.ToString().EscapeMarkup(),
                 truncated.EscapeMarkup()
             );
         }

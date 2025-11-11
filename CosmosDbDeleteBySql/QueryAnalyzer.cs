@@ -22,10 +22,10 @@ public static class QueryAnalyzer
         // - WHERE partitionKey = 'value'
         var patterns = new[]
         {
-            // c.property = 'value' or c.property = "value"
-            $@"\b(?:c\.{Regex.Escape(partitionKeyProperty)}|{Regex.Escape(partitionKeyProperty)})\s*=\s*['""]([^'""]+)['""]",
+            // c.property = 'value' or c.property = "value" (allows empty strings with [^'"]*)
+            $@"\b(?:c\.{Regex.Escape(partitionKeyProperty)}|{Regex.Escape(partitionKeyProperty)})\s*=\s*['""]([^'""]*)['""]",
             // c['property'] = 'value' or c["property"] = "value"
-            $@"\bc\[['""]({Regex.Escape(partitionKeyProperty)})['""]\]\s*=\s*['""]([^'""]+)['""]"
+            $@"\bc\[['""]({Regex.Escape(partitionKeyProperty)})['""]\]\s*=\s*['""]([^'""]*)['""]"
         };
 
         foreach (var pattern in patterns)
@@ -36,18 +36,6 @@ public static class QueryAnalyzer
                 // For the second pattern, the value is in the third group
                 var valueGroup = match.Groups.Count > 2 ? match.Groups[2] : match.Groups[1];
                 var value = valueGroup.Value;
-
-                // Verify that there are no OR conditions that might include other partition keys
-                if (ContainsOrCondition(normalizedQuery))
-                {
-                    return null;
-                }
-
-                // Verify that the partition key is only compared with equality (not >, <, !=, etc.)
-                if (ContainsNonEqualityComparison(normalizedQuery, partitionKeyProperty))
-                {
-                    return null;
-                }
 
                 return value;
             }
@@ -87,7 +75,30 @@ public static class QueryAnalyzer
     /// </summary>
     public static bool CanUseDeleteAllItemsInPartition(string query, string partitionKeyPath)
     {
+        // Check if we can extract a partition key value
         var partitionKeyValue = ExtractPartitionKeyValue(query, partitionKeyPath);
-        return partitionKeyValue != null;
+        if (partitionKeyValue == null)
+        {
+            return false;
+        }
+
+        // Check if the query contains additional conditions or operators
+        // If there are additional conditions, we cannot use DeleteAllItemsInPartition
+        // because it would delete ALL items in the partition, not just those matching the additional conditions
+        if (Regex.IsMatch(query, @"\b(AND|OR|BETWEEN|IN)\b", RegexOptions.IgnoreCase))
+        {
+            return false;
+        }
+
+        var partitionKeyProperty = partitionKeyPath.TrimStart('/').Split('/').Last();
+
+        // Check if the partition key is used with non-equality operators (>, <, !=, etc.)
+        var nonEqualityPattern = $@"\b(?:c\.{Regex.Escape(partitionKeyProperty)}|{Regex.Escape(partitionKeyProperty)})\s*(?:!=|<>|>|<|>=|<=)";
+        if (Regex.IsMatch(query, nonEqualityPattern, RegexOptions.IgnoreCase))
+        {
+            return false;
+        }
+
+        return true;
     }
 }
