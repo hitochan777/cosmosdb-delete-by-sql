@@ -5,7 +5,7 @@ A CLI tool to delete Azure Cosmos DB items that match a condition specified by S
 ## Features
 
 - Delete items based on SQL query conditions
-- Smart deletion strategy:
+- Smart deletion strategy (To be implemented):
   - Uses `DeleteAllItemsInPartitionKey` for single-partition queries (when supported by the account)
   - Falls back to individual item deletion for multi-partition queries or when batch deletion is not supported
 - Preview items before deletion with a formatted table
